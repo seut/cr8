@@ -32,7 +32,8 @@ setup(
     ],
     extras_require={
         'uvloop': ['uvloop'],
-        'asyncpg': ['asyncpg']
+        'asyncpg': ['asyncpg'],
+        'prometheus': ['prometheus_client']
     },
     python_requires='>=3.6',
     classifiers=[

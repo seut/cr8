@@ -44,18 +44,37 @@ def print_only(table):
     print('No hosts provided. Nothing inserted')
 
 
+def _instrument_prometheus(port, measure):
+    try:
+        from prometheus_client import start_http_server, Histogram
+    except ImportError:
+        print("Couldn't instrument prometheus metrics")
+        return
+    h = Histogram('request_latency_ms', 'Request latencies in ms')
+
+    def alt_measure(val):
+        measure(val)
+        h.observe(val)
+
+    start_http_server(port)
+    print(f'Prometheus metrics: http://localhost:{port}/')
+    return alt_measure
+
+
 @argh.arg('--table', help='Target table', required=True)
 @argh.arg('-b', '--bulk-size', type=to_int)
 @argh.arg('--hosts', help='crate hosts which will be used \
           to execute the insert statement', type=str)
 @argh.arg('-c', '--concurrency', type=to_int)
 @argh.arg('-of', '--output-fmt', choices=['json', 'text'], default='text')
+@argh.arg('--prometheus-port', type=to_int)
 @argh.wrap_errors([KeyboardInterrupt, BrokenPipeError] + clients.client_errors)
 def insert_json(table=None,
                 bulk_size=1000,
                 concurrency=25,
                 hosts=None,
-                output_fmt=None):
+                output_fmt=None,
+                prometheus_port=None):
     """Insert JSON lines fed into stdin into a Crate cluster.
 
     If no hosts are specified the statements will be printed.
@@ -75,8 +94,13 @@ def insert_json(table=None,
         bulk_size, concurrency), file=sys.stderr)
 
     stats = Stats()
+    if prometheus_port:
+        measure = _instrument_prometheus(prometheus_port, stats.measure)
+    else:
+        measure = stats.measure
+
     with clients.client(hosts, concurrency=concurrency) as client:
-        f = partial(aio.measure, stats, client.execute_many)
+        f = partial(aio.measure, measure, client.execute_many)
         try:
             aio.run_many(f, bulk_queries, concurrency)
         except clients.SqlException as e:
