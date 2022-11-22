@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
+import re
 import sys
 import json
 import argh
@@ -33,15 +33,16 @@ where
     cast(is_generated as string) in ('f', 'NEVER')
     and {schema_column_name} = ?
     and table_name = ?
-    and column_name not like '%]'
 order by ordinal_position asc
 """
 
+SUB_COLUMN_PATTERN = re.compile("(.*?)\['([^']+)'\]")
 
 class Column(NamedTuple):
     name: str
     type_name: str
     max_len: Optional[int]
+    children: list
 
 
 def retrieve_columns(client, schema, table):
@@ -50,7 +51,7 @@ def retrieve_columns(client, schema, table):
     stmt = SELLECT_COLS.format(
         schema_column_name='table_schema' if version >= (0, 57, 0) else 'schema_name')
     r = aio.run(client.execute, stmt, (schema, table))
-    return [Column(*row) for row in r['rows']]
+    return [Column(*row, children=list()) for row in r['rows']]
 
 
 def generate_row(fakers):
@@ -71,6 +72,18 @@ def make_array_provider(inner_provider, dimensions):
         arr_len = partial(fake.random_int, min=0, max=50)
         return partial(array_provider, arr_len, inner, dimensions)
     return setup_array_providers
+
+
+def object_provider(children, provider_for_type):
+    if len(children) == 0:
+        return lambda f, col: dict
+    def make_object(fake):
+        obj = dict()
+        for child in children:
+            obj[child.name] = provider_for_type(child)(fake, child.name)()
+        return obj
+    return lambda f, col: partial(make_object, f)
+
 
 
 def _gen_short(f, col):
@@ -137,6 +150,8 @@ class DataFaker:
         self.fake.add_provider(GeoSpatialProvider)
 
     def _provider_for_type(self, column: Column):
+        if column.type_name == 'object':
+            return object_provider(column.children, self._provider_for_type)
         inner_type, *dim = column.type_name.split('_array')
         inner_provider = self._type_default.get(inner_type)
         if not dim or not inner_provider:
@@ -211,6 +226,33 @@ async def _gen_data_and_insert(q, e, client, stmt, row_fun, size_seq):
     await q.put(None)
 
 
+def path_of_name(name: str) -> list:
+    m = SUB_COLUMN_PATTERN.findall(name)
+    return [v for x in m for v in x if v != '']
+
+
+def unflatten_columns(columns):
+    current_path = list()
+    cols = list()
+    columns.sort(key=lambda col: col.name)
+    for c in columns:
+        if "]" in c.name:
+            name_path = path_of_name(c.name)
+            path_length = len(name_path)
+            parent = current_path[path_length-2]
+            name = name_path[path_length-1]
+            c1 = Column(name=name, type_name=c.type_name, max_len=c.max_len, children=c.children)
+            parent.children.append(c1)
+            if c1.type_name == "object":
+                current_path.append(c1)
+        else:
+            cols.append(c)
+            current_path.clear()
+            if c.type_name == "object":
+                current_path.append(c)
+
+    return cols
+
 @argh.arg('--table', help='table name', required=True)
 @argh.arg('--hosts', help='crate hosts', type=str)
 @argh.arg('-n', '--num-records',
@@ -276,6 +318,9 @@ def insert_fake_data(hosts=None,
     print('Found schema: ')
     columns_dict = {r.name: r.type_name for r in columns}
     print(json.dumps(columns_dict, sort_keys=True, indent=4))
+    columns = unflatten_columns(columns)
+    columns_dict = {r.name: r for r in columns}
+    #print(json.dumps(columns_dict, sort_keys=True, indent=4))
     mapping = None
     if mapping_file:
         mapping = json.load(mapping_file)
