@@ -1,0 +1,26 @@
+---
+when:
+  - event: push
+    branch: master
+  - event: pull_request
+
+matrix:
+  python_version:
+    - 3.13
+    - 3.12
+    - 3.11
+    - 3.10
+
+steps:
+  - name: test
+    image: python:${python_version}-trixie
+    environment:
+      LANG: en_US.UTF-8
+    commands:
+      - apt-get update
+      - apt-get install --yes openjdk-21-jdk git
+      - python -m pip install pycodestyle unittest-xml-reporting .
+      - python -m pycodestyle cr8
+      - useradd ci -m
+      - chown ci:ci -R .
+      - su ci -c "python -m xmlrunner discover -v -o test-results/test/"
