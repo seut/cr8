@@ -26,14 +26,14 @@ class TestReindex(TestCase):
         shutil.rmtree(self.data_path, ignore_errors=True)
 
     def test_reindex(self):
-        crate_v4 = CrateNode(
-            crate_dir=get_crate('4.x.x'),
+        crate_v5 = CrateNode(
+            crate_dir=get_crate('5.x.x'),
             keep_data=True,
             settings=self.crate_settings
         )
-        self._to_stop.append(crate_v4)
-        crate_v4.start()
-        with client(crate_v4.http_url) as c:
+        self._to_stop.append(crate_v5)
+        crate_v5.start()
+        with client(crate_v5.http_url) as c:
             aio.run(c.execute, "create table t (x int)")
             args = (
                 (1,),
@@ -41,21 +41,21 @@ class TestReindex(TestCase):
                 (3,),
             )
             aio.run(c.execute_many, "insert into t (x) values (?)", args)
-        crate_v4.stop()
-        self._to_stop.remove(crate_v4)
+        crate_v5.stop()
+        self._to_stop.remove(crate_v5)
 
-        crate_v5 = CrateNode(
-            crate_dir=get_crate('5.0.3'),
+        crate_v6 = CrateNode(
+            crate_dir=get_crate('6.0.0'),
             keep_data=True,
             settings=self.crate_settings
         )
-        self._to_stop.append(crate_v5)
-        crate_v5.start()
-        reindex(hosts=crate_v5.http_url)
-        with client(crate_v5.http_url) as c:
+        self._to_stop.append(crate_v6)
+        crate_v6.start()
+        reindex(hosts=crate_v6.http_url)
+        with client(crate_v6.http_url) as c:
             result = aio.run(c.execute, "SELECT version FROM information_schema.tables WHERE table_name = 't'")
             version = result['rows'][0][0]
-            self.assertEqual(version, {'upgraded': None, 'created': '5.0.3'})
+            self.assertEqual(version, {'upgraded': None, 'created': '6.0.0'})
 
             cnt = aio.run(c.execute, 'SELECT count(*) FROM t')['rows'][0][0]
             self.assertEqual(cnt, 3)
