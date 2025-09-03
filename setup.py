@@ -23,6 +23,9 @@ setup(
         ]
     },
     packages=['cr8'],
+    package_data={
+        "cr8": ["py.typed"]
+    },
     install_requires=[
         'argh',
         'tqdm',
