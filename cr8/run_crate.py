@@ -60,7 +60,7 @@ class ReleaseUrlSegments(NamedTuple):
         extension = 'tar.gz'
 
         machine = platform.machine()
-        if machine.startswith('arm'):
+        if machine.startswith('arm') or machine == "aarch64":
             arch = 'aarch64'
         else:
             arch = 'x64'
