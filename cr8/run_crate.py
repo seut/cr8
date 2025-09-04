@@ -24,7 +24,7 @@ from hashlib import sha1
 from pathlib import Path
 from functools import partial
 from itertools import cycle
-from typing import Optional, Dict, Any, List, NamedTuple
+from typing import Callable, Optional, Any, NamedTuple, Generator, Iterable, IO
 from urllib.request import urlopen
 
 from cr8.java_magic import find_java_home
@@ -82,10 +82,10 @@ class ReleaseUrlSegments(NamedTuple):
         return ReleaseUrlSegments(arch=arch, os=os, extension=extension)
 
     @property
-    def platform_key(self):
+    def platform_key(self) -> str:
         return f'{self.arch}_{self.os}'
 
-    def get_uri(self, version):
+    def get_uri(self, version: str) -> str:
         return RELEASE_PLATFORM_URL.format(
             version=version,
             os=self.os,
@@ -94,17 +94,17 @@ class ReleaseUrlSegments(NamedTuple):
         )
 
 
-def _format_cmd_option_legacy(k, v):
+def _format_cmd_option_legacy(k: str, v: Any):
     return '-Des.{0}={1}'.format(k, v)
 
 
-def _format_cmd_option(k, v):
+def _format_cmd_option(k: str, v: Any):
     if isinstance(v, bool):
         return '-C{0}={1}'.format(k, str(v).lower())
     return '-C{0}={1}'.format(k, v)
 
 
-def _extract_version(crate_dir) -> tuple:
+def _extract_version(crate_dir: str) -> tuple[int, int, int]:
     m = FOLDER_VERSION_RE.findall(crate_dir)
     if m:
         return parse_version(m[0])
@@ -113,12 +113,12 @@ def _extract_version(crate_dir) -> tuple:
 
 class OutputMonitor:
 
-    def __init__(self):
-        self.consumers = []
+    def __init__(self) -> None:
+        self.consumers: list[Callable[[str], None]] = []
 
-    def _consume(self, proc):
+    def _consume(self, proc: subprocess.Popen):
         try:
-            for line in proc.stdout:
+            for line in proc.stdout:  # type: ignore
                 for consumer in self.consumers:
                     if callable(consumer):
                         consumer(line)
@@ -129,20 +129,20 @@ class OutputMonitor:
                 return
             raise
 
-    def start(self, proc):
+    def start(self, proc: subprocess.Popen):
         out_thread = threading.Thread(target=self._consume, args=(proc,))
         out_thread.daemon = True
         out_thread.start()
 
 
 class Timeout:
-    def __init__(self, timeout, sleep=0.1):
+    def __init__(self, timeout: int, sleep=0.1):
         self.start_time = time.time()
         self.sleep = sleep
         self._first_ok = True
         self.timeout = timeout
 
-        def timeout_expired():
+        def timeout_expired() -> bool:
             if self._first_ok:
                 self._first_ok = False
                 return False
@@ -151,6 +151,7 @@ class Timeout:
                 return True
             if self.sleep:
                 time.sleep(self.sleep)
+            return False
 
         self._timeout_expired = timeout_expired
 
@@ -160,7 +161,7 @@ class Timeout:
         return True
 
 
-def wait_until(predicate, timeout=30):
+def wait_until(predicate: Callable[[], bool], timeout: int = 30):
     """Wait until predicate returns a truthy value or the timeout is reached.
 
     >>> wait_until(lambda: True, timeout=10)
@@ -172,7 +173,7 @@ def wait_until(predicate, timeout=30):
             break
 
 
-def _is_up(host: str, port: int):
+def _is_up(host: str, port: int) -> bool:
     try:
         conn = _create_connection(host, port)
         conn.close()
@@ -181,13 +182,13 @@ def _is_up(host: str, port: int):
         return False
 
 
-def _create_connection(host: str, port: int):
+def _create_connection(host: str, port: int) -> socket.socket:
     if host[0] == '[' and host[-1] == ']':
         host = host[1:-1]
     return socket.create_connection((host, port))
 
 
-def _has_ssl(host: str, port: int):
+def _has_ssl(host: str, port: int) -> bool:
     try:
         with NO_SSL_VERIFY_CTX.wrap_socket(_create_connection(host, port)) as s:
             s.close()
@@ -196,7 +197,7 @@ def _has_ssl(host: str, port: int):
         return False
 
 
-def cluster_state_200(url):
+def cluster_state_200(url: str) -> bool:
     try:
         with urlopen(url, context=NO_SSL_VERIFY_CTX) as r:
             p = json.loads(r.read().decode('utf-8'))
@@ -206,14 +207,14 @@ def cluster_state_200(url):
         return False
 
 
-def _get_settings(settings=None) -> Dict[str, Any]:
+def _get_settings(settings: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     s = DEFAULT_SETTINGS.copy()
     if settings:
         s.update(settings)
     return s
 
 
-def _try_print_log(logfile):
+def _try_print_log(logfile: str):
     try:
         with open(logfile) as f:
             for line in f:
@@ -222,7 +223,7 @@ def _try_print_log(logfile):
         pass
 
 
-def _ensure_running(proc):
+def _ensure_running(proc: subprocess.Popen) -> bool:
     result = proc.poll()
     if result:
         raise SystemExit('Process exited: ' + str(result))
@@ -244,11 +245,11 @@ class CrateNode(contextlib.ExitStack):
 
     def __init__(self,
                  crate_dir: str,
-                 env: Dict[str, Any] = None,
-                 settings: Dict[str, Any] = None,
+                 env: Optional[dict[str, Any]] = None,
+                 settings: Optional[dict[str, Any]] = None,
                  keep_data: bool = False,
                  java_magic: bool = False,
-                 version: tuple = None) -> None:
+                 version: Optional[tuple] = None) -> None:
         """Create a CrateNode
 
         Args:
@@ -373,10 +374,10 @@ class CrateNode(contextlib.ExitStack):
             self.monitor.consumers.remove(log_lines.append)
         log.info('Cluster ready to process requests')
 
-    def _set_addr(self, protocol, addr):
+    def _set_addr(self, protocol: str, addr: str):
         log.info('{0:10}: {1}'.format(protocol.capitalize(), addr))
-        host, port = addr.rsplit(':', 1)
-        port = int(port)
+        host, port_ = addr.rsplit(':', 1)
+        port = int(port_)
         self.addresses[protocol] = Address(host, port)
         if protocol == 'http':
             self.http_host = addr
@@ -431,7 +432,7 @@ class AddrConsumer:
         self.on_addr = on_addr
 
     @staticmethod
-    def _parse(line):
+    def _parse(line: str) -> tuple[Optional[str], Optional[str]]:
         """ Parse protocol and bound address from log message
 
         >>> AddrConsumer._parse('NONE')
@@ -456,19 +457,19 @@ class AddrConsumer:
         protocol = AddrConsumer.PROTOCOL_MAP.get(protocol, protocol)
         return protocol, m.group('addr')
 
-    def send(self, line):
+    def send(self, line: str):
         protocol, addr = AddrConsumer._parse(line)
         if protocol:
             self.on_addr(protocol, addr)
 
 
-def _openuri(uri):
+def _openuri(uri: str) -> IO[bytes]:
     if os.path.isfile(uri):
         return open(uri, 'rb')
     return io.BytesIO(urlopen(uri).read())
 
 
-def _can_use_cache(uri, crate_dir):
+def _can_use_cache(uri: str, crate_dir: str) -> bool:
     if not os.path.exists(crate_dir):
         return False
     os.utime(crate_dir)  # update mtime to avoid removal
@@ -480,7 +481,7 @@ def _can_use_cache(uri, crate_dir):
     return True
 
 
-def _download_and_extract(uri, crate_root):
+def _download_and_extract(uri: str, crate_root: str) -> str:
     filename = os.path.basename(uri)
     crate_folder_name = re.sub(r'\.tar(\.gz)?$', '', filename)
     crate_dir = os.path.join(crate_root, crate_folder_name)
@@ -501,7 +502,7 @@ def _download_and_extract(uri, crate_root):
     return crate_dir
 
 
-def _from_versions_json(key):
+def _from_versions_json(key: str) -> Callable[[], str]:
     def retrieve():
         with urlopen('https://cratedb.com/releases.json') as r:
             if r.headers.get('Content-Encoding') == 'gzip':
@@ -521,7 +522,7 @@ def _from_versions_json(key):
 RELEASE_RE = re.compile(r'.*>(?P<filename>crate-(?P<version>\d+\.\d+\.\d+)\.tar\.gz)<.*')
 
 
-def _retrieve_crate_versions():
+def _retrieve_crate_versions() -> Generator[str, None, None]:
     base_uri = 'https://cdn.crate.io/downloads/releases/'
     with urlopen(base_uri) as r:
         lines = (line.decode('utf-8') for line in r)
@@ -531,7 +532,7 @@ def _retrieve_crate_versions():
                 yield m.group('version')
 
 
-def _find_matching_version(versions, version_pattern):
+def _find_matching_version(versions: Iterable[str], version_pattern: str) -> Optional[str]:
     """
     Return the first matching version
 
@@ -563,7 +564,7 @@ def _get_uri_from_released_version(version: str) -> str:
         return RELEASE_URL.format(version=version)
 
 
-def _lookup_uri(version):
+def _lookup_uri(version: str) -> str:
     if version in _version_lookups:
         version = _version_lookups[version]()
     m = VERSION_RE.match(version)
@@ -571,15 +572,15 @@ def _lookup_uri(version):
         return _get_uri_from_released_version(m.group(0))
     m = DYNAMIC_VERSION_RE.match(version)
     if m:
-        versions = sorted(map(parse_version, list(_retrieve_crate_versions())))
-        versions = ['.'.join(map(str, v)) for v in versions[::-1]]
+        version_tuples = sorted(map(parse_version, list(_retrieve_crate_versions())))
+        versions = ['.'.join(map(str, v)) for v in version_tuples[::-1]]
         release = _find_matching_version(versions, m.group(0))
         if release:
             return _get_uri_from_released_version(release)
     return version
 
 
-def _is_project_repo(src_repo):
+def _is_project_repo(src_repo: str) -> bool:
     path = Path(src_repo)
     return (
         path.is_dir()
@@ -588,7 +589,7 @@ def _is_project_repo(src_repo):
     )
 
 
-def _build_tarball(src_repo) -> Path:
+def _build_tarball(src_repo: str) -> Path:
     """ Build a tarball from src and return the path to it """
     run = partial(subprocess.run, cwd=src_repo, check=True, stdin=subprocess.DEVNULL)
     run(['git', 'clean', '-xdff'])
@@ -612,7 +613,7 @@ def _build_tarball(src_repo) -> Path:
     return next(distributions.glob('crate-*.tar.gz'))
 
 
-def _extract_tarball(tarball):
+def _extract_tarball(tarball: Path) -> str:
     with tarfile.open(tarball) as t:
         first_file = t.getnames()[0]
         # First file name might be the folder, or a file inside the folder
@@ -626,7 +627,7 @@ def _extract_tarball(tarball):
     return str(tarball.parent / folder_name)
 
 
-def _build_from_release_branch(branch, crate_root):
+def _build_from_release_branch(branch: str, crate_root: str) -> str:
     crates = Path(crate_root)
     src_repo = crates / 'sources_tmp'
     run_in_repo = partial(
@@ -655,7 +656,7 @@ def _build_from_release_branch(branch, crate_root):
     return _extract_tarball(tarball)
 
 
-def _remove_old_crates(path):
+def _remove_old_crates(path: str):
     now = time.time()
     s7days_ago = now - (7 * 24 * 60 * 60)
     with contextlib.suppress(FileNotFoundError):
@@ -675,7 +676,7 @@ def _crates_cache() -> str:
         os.path.join(os.path.expanduser('~'), '.cache', 'cr8', 'crates'))
 
 
-def get_crate(version, crate_root=None):
+def get_crate(version: str, crate_root=None):
     """Retrieve a Crate tarball, extract it and return the path.
 
     Args:
@@ -709,7 +710,7 @@ def get_crate(version, crate_root=None):
     return crate_dir
 
 
-def _parse_options(options: List[str]) -> Dict[str, str]:
+def _parse_options(options: list[str]) -> dict[str, str]:
     """ Parse repeatable CLI options
 
     >>> opts = _parse_options(['cluster.name=foo', 'CRATE_JAVA_OPTS="-Dxy=foo"'])
@@ -723,14 +724,12 @@ def _parse_options(options: List[str]) -> Dict[str, str]:
             f'Option must be in format <key>=<value>, got: {options}')
 
 
-def create_node(
-        version,
-        env=None,
-        setting=None,
-        crate_root=None,
-        keep_data=False,
-        java_magic=False,
-):
+def create_node(version: str,
+                env: Optional[list[str]] = None,
+                setting=None,
+                crate_root: Optional[str] = None,
+                keep_data: bool = False,
+                java_magic: bool = False) -> CrateNode:
     init_logging(log)
     settings = {
         'cluster.name': 'cr8-crate-run' + str(random.randrange(int(1e9)))
@@ -738,11 +737,9 @@ def create_node(
     crate_dir = get_crate(version, crate_root)
     if setting:
         settings.update(_parse_options(setting))
-    if env:
-        env = _parse_options(env)
     return CrateNode(
         crate_dir=crate_dir,
-        env=env,
+        env=(env and _parse_options(env) or None),
         settings=settings,
         keep_data=keep_data,
         java_magic=java_magic
